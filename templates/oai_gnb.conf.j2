@@ -1,11 +1,6 @@
-# конфигурация для бс
-
 global_configs :
 {
   THREAD_PARALLEL_CONFIG = "PARALLEL_SINGLE_THREAD";
-  TRAINER_PREFERENCE = 0;
-  PERFECT_CE_CHANNEL_ESTIMATION = "no";
-  PERFECT_RL_CHANNEL_ESTIMATION = "no";
 };
 
 NR_MACRLC =
@@ -32,9 +27,7 @@ NRRU =
   max_rxgain                    = 114;
   eNB_instances  = [0];
   clock_src      = "internal";
-             # Если конкретный серийный номер, вставьте его:
-  # device_args  = "serial={{ usrp_serial }}"; 
-  device_args  = ""; 
+  device_args    = ""; 
   tx_gain      = 90;
   rx_gain      = 40;
 });
@@ -58,7 +51,8 @@ gNB =
 
   force_256qam_off = 1;
 
-  servingCellConfigCommon = (
+  servingCellConfigCommon =
+  (
   {
     spCellConfigCommon =
     {

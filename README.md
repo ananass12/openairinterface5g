@@ -1,41 +1,33 @@
-# Развертывание 5G сети на USRP B200 с Open5GS
+# Развертывание 5G SA сети: Open5GS + OAI gNB + USRP B200
 
-## Быстрый старт
 
-1. **Клонируйте репозиторий:**
+## Структура файлов
+
+- `playbook.yaml` — основной скрипт развертывания
+- `inventory.ini` — файл инвентаризации
+- `vars.yml` — переменные конфигурации
+- `templates/oai_gnb.conf.j2` — шаблон конфига базовой станции
+
+## Запуск установки
+
+
 ```bash
-   git clone (ссылка)
+cd ~/openairinterface5g
+ansible-playbook -i inventory.ini playbook.yaml --ask-become-pass
 ```
 
-2. **Настройте инвентаризацию**
+---
 
-Отредактируйте inventory.ini, указав IP-адрес вашего сервера
+# Проверка корректности установки
 
-3. **Настройте переменные**
-
-Отредактируйте vars.yml:
-- server_ip: IP-адрес сервера
-- plmn_mcc / plmn_mnc: Коды вашей сети 
-
-4. **Запустите Ansible Playbook**
-```bash
-   ansible-playbook -i inventory.ini playbook.yml
-   ```
-
-## После установки
-
-1. Добавление абонентов
-
-2. Проверка USRP
+## USRP B200
 
 ```bash
-   uhd_find_devices
-   ```
-
-3. Запуск базовой станции
-```bash
-cd build
-sudo ./nr-softmodem -O ~/oai_gnb.conf
+uhd_find_devices
 ```
 
-4. Подключение UE (Телефона/Модема)
+## Ядро (Open5GS)
+
+```bash
+systemctl status open5gs-amfd open5gs-upfd open5gs-nrfd mongod --no-pager -l
+```
