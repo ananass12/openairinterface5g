@@ -1,0 +1,15 @@
+# Сетевые настройки
+server_ip: "127.0.0.1" 
+wan_interface: "eth0"
+
+# PLMN и TAC
+plmn_mcc: "001"
+plmn_mnc: "01"
+tac: 1
+
+# Настройки USRP
+usrp_serial: "" # Оставьте пустым, если один USRP, или укажите серийный номер
+fpga_zip_name: "b2xx_b200_fpga_default-gc37b318.zip" # Проверьте имя файла в репо TelecomDep
+
+# Пути
+oai_install_dir: "/home/{{ ansible_user }}/openairinterface5g"

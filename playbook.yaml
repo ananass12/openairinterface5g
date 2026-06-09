@@ -1,0 +1,279 @@
+- name: Deploy Open5GS + OAI gNB for USRP B200
+  hosts: sdr_server
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    
+    - name: Install prerequisites for MongoDB
+      apt:
+        name:
+          - gnupg
+          - curl
+        state: present
+
+    - name: Import MongoDB GPG key
+      shell: |
+        curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+      args:
+        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+
+    - name: Add MongoDB repository (Noble/Jammy compatible)
+      copy:
+        content: "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse"
+        dest: /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+    - name: Update cache and install MongoDB
+      apt:
+        update_cache: yes
+        name: mongodb-org
+        state: present
+
+    - name: Start and enable MongoDB
+      systemd:
+        name: mongod
+        state: started
+        enabled: yes
+
+    
+    # Установка ядра Open5GS
+    
+    # обавляем GPG ключ вручную
+    - name: Import Open5GS PPA GPG Key
+      apt_key:
+        url: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xCA542085D893C03492F35E1EACC46E8E238249B1
+        state: present
+
+    - name: Add Open5GS PPA Repository
+      apt_repository:
+        repo: ppa:open5gs/latest
+        state: present
+        filename: open5gs
+
+    
+    # Установка Node.js и WebUI
+    
+    - name: Install Node.js and NPM from default repos
+      apt:
+        name:
+          - nodejs
+          - npm
+        state: present
+
+    - name: Install Open5GS WebUI
+      shell: |
+        curl -fsSL https://open5gs.org/open5gs/assets/webui/install | sudo -E bash -
+      args:
+        creates: /usr/lib/node_modules/@open5gs/webui
+
+    - name: Step 3 - Start WebUI
+      systemd:
+        name: open5gs-webui
+        state: started
+        enabled: yes
+
+    
+    # Базовая конфигурация Open5GS (PLMN)
+    
+    - name: Configure AMF PLMN and TAC
+      replace:
+        path: /etc/open5gs/amf.yaml
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: 'mcc: 999', replace: 'mcc: {{ plmn_mcc }}' }
+        - { regexp: 'mnc: 70', replace: 'mnc: {{ plmn_mnc }}' }
+        - { regexp: 'tac: 7', replace: 'tac: {{ tac }}' } # Примерное значение, зависит от дефолта
+
+    - name:  Configure NRF PLMN
+      replace:
+        path: /etc/open5gs/nrf.yaml
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: 'mcc: 999', replace: 'mcc: {{ plmn_mcc }}' }
+        - { regexp: 'mnc: 70', replace: 'mnc: {{ plmn_mnc }}' }
+
+    - name: Restart Core Network Functions
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - open5gs-nrfd
+        - open5gs-amfd
+        - open5gs-upfd
+
+    
+    # Настройка NAT и маршрутизации
+    
+    - name: Enable IP Forwarding
+      sysctl:
+        name: "{{ item }}"
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop:
+        - net.ipv4.ip_forward
+        - net.ipv6.conf.all.forwarding
+
+    - name: Add IPv4 NAT Rule
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        source: 10.45.0.0/16
+        jump: MASQUERADE
+        out_interface: "{{ wan_interface }}"
+        comment: "OAI/USRP NAT IPv4"
+
+    - name: Add IPv6 NAT Rule
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        source: 2001:db8:cafe::/48
+        jump: MASQUERADE
+        out_interface: "{{ wan_interface }}"
+        ip_version: ipv6
+        comment: "OAI/USRP NAT IPv6"
+
+    - name: Disable UFW
+      ufw:
+        state: disabled
+
+
+
+    - name: Ensure all Open5GS services are running
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - open5gs-nrfd
+        - open5gs-amfd
+        - open5gs-smfd
+        - open5gs-upfd
+        - open5gs-ausfd
+        - open5gs-udmd
+        - open5gs-udrd
+        - open5gs-pcfd
+
+    
+    # Настройка USRP B200
+    
+    - name: Clone UHD Images repository
+      git:
+        repo: https://github.com/TelecomDep/uhd_images
+        dest: /tmp/uhd_images
+        force: yes
+
+    - name: Create UHD images directory
+      file:
+        path: /usr/share/uhd/images
+        state: directory
+        mode: '0755'
+
+    - name: Copy images to system directory
+      copy:
+        src: /tmp/uhd_images/
+        dest: /usr/share/uhd/images/
+        remote_src: yes
+
+    - name: Unzip FPGA firmware for B200
+      unarchive:
+        src: "/usr/share/uhd/images/{{ fpga_zip_name }}"
+        dest: /usr/share/uhd/images/
+        remote_src: yes
+        extra_opts: [-o] # Overwrite
+
+    - name: Set UHD_IMAGES_DIR environment variable
+      lineinfile:
+        path: "~/.bashrc"
+        line: 'export UHD_IMAGES_DIR=/usr/share/uhd/images/'
+        create: yes
+
+    - name: Export variable for current session
+      shell: export UHD_IMAGES_DIR=/usr/share/uhd/images/
+
+    
+    # Настройка прав доступа к USB (udev rules)
+    
+    - name: Create udev rules for USRP
+      copy:
+        dest: /etc/udev/rules.d/uhd.rules
+        content: |
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE="0666", GROUP="plugdev"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0021", MODE="0666", GROUP="plugdev"
+      notify: Reload udev rules
+
+    
+    # Установка и сборка OpenAirInterface5G (OAI)
+    
+    - name: Install build dependencies for OAI
+      apt:
+        name:
+          - git
+          - cmake
+          - build-essential
+          - libfftw3-dev
+          - libmbedtls-dev
+          - libboost-program-options-dev
+          - libconfig++-dev
+          - libsctp-dev
+          - libuhd-dev
+          - uhd-host
+          - python3-pip
+          - ninja-build
+        state: present
+
+    - name: Clone OAI Repository
+      git:
+        repo: https://gitlab.eurecom.fr/oai/openairinterface5g.git
+        dest: "{{ oai_install_dir }}"
+        force: yes
+      become_user: "{{ ansible_user }}"
+
+    - name: Run OAI dependency installer (-I)
+      shell: |
+        source oaienv
+        cd cmake_targets
+        ./build_oai -I
+      args:
+        chdir: "{{ oai_install_dir }}"
+        executable: /bin/bash
+      become_user: "{{ ansible_user }}"
+
+    - name: Build gNB with USRP support
+      shell: |
+        source oaienv
+        cd cmake_targets
+        ./build_oai --gNB --ninja --install-system-files -w USRP
+      args:
+        chdir: "{{ oai_install_dir }}"
+        executable: /bin/bash
+      become_user: "{{ ansible_user }}"
+
+    
+    #  Конфигурация и подготовка к запуску gNB
+    
+    - name: Create config directory in home
+      file:
+        path: "/home/{{ ansible_user }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+
+    - name:  Generate OAI gNB configuration
+      template:
+        src: templates/oai_gnb.conf.j2
+        dest: "/home/{{ ansible_user }}/oai_gnb.conf"
+        owner: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Final Message
+      debug:
+        msg: |
+          Installation Complete!
+
+  handlers:
+    - name: Reload udev rules
+      command: udevadm control --reload-rules && udevadm trigger
