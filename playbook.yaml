@@ -1,6 +1,6 @@
 ---
 - name: Установка Open5GS
-  hosts: sdr_server
+  hosts: localhost
   become: yes
   vars_files:
     - vars.yaml
