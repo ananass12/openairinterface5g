@@ -1,447 +1,96 @@
-- name: Deploy Open5GS + OAI gNB for USRP B200
-  hosts: sdr_server
+---
+- name: Установка Open5GS
+  hosts: localhost
   become: yes
   vars_files:
-    - /home/nastya/openairinterface5g/build/vars.yml
+    - vars.yaml
+  
+  # основная часть
 
   tasks:
-    
-    - name: 1. Install prerequisites for MongoDB
+    # MongoDB
+    - name: Установка необходимых пакетов
       apt:
         name:
           - gnupg
           - curl
+          - ca-certificates
         state: present
-
-    - name: 1. Import MongoDB GPG key
+        update_cache: yes
+    
+    - name: Добавление ключа mangodb
       shell: |
         curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
       args:
-        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+        creates: "/usr/share/keyrings/mongodb-server-8.0.gpg"
 
-    - name: 1. Add MongoDB repository (Noble/Jammy compatible)
-      copy:
-        content: "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse"
-        dest: /etc/apt/sources.list.d/mongodb-org-8.0.list
+    - name: Добавление репозитория mangodb
+      apt_repository:
+        repo: "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse"
+        state: present
+        filename: mongodb-org
 
-    - name: 1. Update cache and install MongoDB
+    - name: Установка MongoDB
       apt:
-        update_cache: yes
         name: mongodb-org
         state: present
+        update_cache: yes
 
-    - name: 1. Start and enable MongoDB
+    - name: Запуск и включение MongoDB
       systemd:
         name: mongod
         state: started
         enabled: yes
+    
+    # open5GS
 
-    
-    # Сборка Open5GS
-    
-    - name: 2. Install software-properties-common
-      apt:
-        name: software-properties-common
+    - name: Добавление репозитория Open5GS
+      apt_repository:
+        repo: ppa:open5gs/latest
         state: present
 
-    - name: 2. Add Open5GS PPA using native command
-      shell: add-apt-repository -y ppa:open5gs/latest
-      args:
-        creates: /etc/apt/sources.list.d/open5gs-ubuntu-noble.list
-
-    - name: 2. Update cache and install Open5GS
+    - name: Установка Open5GS
       apt:
-        update_cache: yes
         name: open5gs
         state: present
+        update_cache: yes
 
-    # Установка WebUI
+    # Download and import the Nodesource GPG key
+    
+    - name: Добавление ключа 
+      shell: |
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+      args:
+        creates: /etc/apt/keyrings/nodesource.gpg
+    
+    # nodejs
 
-    - name: 3. Install Node.js and NPM
+    - name: Добавление репозитория nodejs
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main"
+        state: present
+        filename: nodesource
+
+    - name: Установка nodejs
       apt:
         name:
           - nodejs
-          - npm
         state: present
+        update_cache: yes
 
-    - name: 3. Install Open5GS WebUI
+    - name: Установка WebUI Open5GS
       shell: |
-        cd /opt/open5gs-src/webui
-        npm ci
-        npm run build
+        curl -fsSL https://open5gs.org/open5gs/assets/webui/install | bash -
       args:
-        creates: /opt/open5gs-src/webui/dist
-
-    - name: 3. Create systemd service for WebUI
-      copy:
-        dest: /etc/systemd/system/open5gs-webui.service
-        content: |
-          [Unit]
-          Description=Open5GS WebUI
-          After=network.target
-
-          [Service]
-          Type=simple
-          ExecStart=/usr/bin/node /opt/open5gs-src/webui/server/app.js
-          WorkingDirectory=/opt/open5gs-src/webui
-          Restart=always
-          User=root
-
-          [Install]
-          WantedBy=multi-user.target
-
-    - name: 3. Enable and Start WebUI
-      systemd:
-        name: open5gs-webui
-        state: started
-        enabled: yes
-        daemon_reload: yes
-
+        creates: /opt/open5gs/webui
     
-    # Базовая конфигурация Open5GS (PLMN)
-    
-    - name: 4. Ensure config directory exists
-      file:
-        path: /etc/open5gs
-        state: directory
-        mode: '0755'
-
-    # 1. Создаем amf.yaml
-    - name: 4. Create amf.yaml
-      copy:
-        dest: /etc/open5gs/amf.yaml
-        content: |
-          logger:
-            file:
-              path: /var/log/open5gs/amf.log
-          global:
-            max:
-              ue: 1024
-          amf:
-            sbi:
-              server:
-                - address: 127.0.0.5
-                  port: 7777
-              client:
-                nrf:
-                  - uri: http://127.0.0.10:7777
-            ngap:
-              server:
-                - address: 127.0.0.5
-            guami:
-              - plmn_id:
-                  mcc: {{ plmn_mcc }}
-                  mnc: {{ plmn_mnc }}
-                amf_id:
-                  region: 2
-                  set: 1
-            tai:
-              - plmn_id:
-                  mcc: {{ plmn_mcc }}
-                  mnc: {{ plmn_mnc }}
-                tac: {{ tac }}
-            plmn_support:
-              - plmn_id:
-                  mcc: {{ plmn_mcc }}
-                  mnc: {{ plmn_mnc }}
-                s_nssai:
-                  - sst: 1
-            security:
-              integrity_order : [ NIA2, NIA1, NIA0 ]
-              ciphering_order : [ NEA0, NEA1, NEA2 ]
-            network_name:
-              full: Open5GS
-            amf_name: open5gs-amf0
-
-    # 2. Создаем nrf.yaml
-    - name: 4. Create nrf.yaml
-      copy:
-        dest: /etc/open5gs/nrf.yaml
-        content: |
-          logger:
-            file:
-              path: /var/log/open5gs/nrf.log
-          global:
-            max:
-              ue: 1024
-          nrf:
-            serving:
-              - plmn_id:
-                  mcc: {{ plmn_mcc }}
-                  mnc: {{ plmn_mnc }}
-            sbi:
-              server:
-                - address: 127.0.0.10
-                  port: 7777
-
-    # 3. Создаем upf.yaml
-    - name: 4. Create upf.yaml
-      copy:
-        dest: /etc/open5gs/upf.yaml
-        content: |
-          logger:
-            file:
-              path: /var/log/open5gs/upf.log
-          global:
-            max:
-              ue: 1024
-          upf:
-            pfcp:
-              server:
-                - address: 127.0.0.7
-            gtpu:
-              server:
-                - address: 127.0.0.7
-            session:
-              - subnet: 10.45.0.1/16
-              - subnet: 2001:db8:cafe::1/48
-
-    # 4. Создаем smf.yaml (нужен для работы UPF)
-    - name: 4. Create smf.yaml
-      copy:
-        dest: /etc/open5gs/smf.yaml
-        content: |
-          logger:
-            file:
-              path: /var/log/open5gs/smf.log
-          global:
-            max:
-              ue: 1024
-          smf:
-            sbi:
-              server:
-                - address: 127.0.0.4
-                  port: 7777
-              client:
-                nrf:
-                  - uri: http://127.0.0.10:7777
-            pfcp:
-              server:
-                - address: 127.0.0.4
-            gtpc:
-              server:
-                - address: 127.0.0.4
-            gtpu:
-              server:
-                - address: 127.0.0.4
-            session:
-              - subnet: 10.45.0.1/16
-              - subnet: 2001:db8:cafe::1/48
-            dns:
-              - 8.8.8.8
-              - 8.8.4.4
-
-    - name: 4. Check for existing Open5GS services
-      shell: systemctl list-unit-files | grep open5gs | awk '{print $1}'
-      register: available_services
-      changed_when: false
-      ignore_errors: yes
-
-    - name: 4. Debug available services
-      debug:
-        msg: "Found services: {{ available_services.stdout_lines }}"
-
-    - name: 4. Enable and Start Open5GS Services (Dynamic)
-      systemd:
-        name: "{{ item }}"
-        state: started
-        enabled: yes
-      loop: "{{ available_services.stdout_lines | default([]) }}"
-      when: available_services.stdout_lines | length > 0
-
-    - name: 4. Fallback Start daemons manually if no services found
-      shell: |
-        nohup open5gs-nrfd > /var/log/open5gs/nrf.log 2>&1 &
-        nohup open5gs-amfd > /var/log/open5gs/amf.log 2>&1 &
-        nohup open5gs-smfd > /var/log/open5gs/smf.log 2>&1 &
-        nohup open5gs-upfd > /var/log/open5gs/upf.log 2>&1 &
-        nohup open5gs-webui > /var/log/open5gs/webui.log 2>&1 &
-      args:
-        creates: /tmp/open5gs_started_flag # Чтобы не запускать дважды
-      when: available_services.stdout_lines | length == 0
-
-    
-    # Настройка NAT и маршрутизации
-    
-    - name: 5. Enable IP Forwarding
-      sysctl:
-        name: "{{ item }}"
-        value: '1'
-        sysctl_set: yes
-        state: present
-        reload: yes
-      loop:
-        - net.ipv4.ip_forward
-        - net.ipv6.conf.all.forwarding
-
-    - name: 5. Add IPv4 NAT Rule
-      iptables:
-        table: nat
-        chain: POSTROUTING
-        source: 10.45.0.0/16
-        jump: MASQUERADE
-        out_interface: "{{ wan_interface }}"
-        comment: "OAI/USRP NAT IPv4"
-
-    - name: 5. Add IPv6 NAT Rule
-      iptables:
-        table: nat
-        chain: POSTROUTING
-        source: 2001:db8:cafe::/48
-        jump: MASQUERADE
-        out_interface: "{{ wan_interface }}"
-        ip_version: ipv6
-        comment: "OAI/USRP NAT IPv6"
-
-    - name: 5. Disable UFW
-      ufw:
-        state: disabled
-
-
-
-    - name: 6. Ensure all Open5GS services are running
-      systemd:
-        name: "{{ item }}"
-        state: started
-        enabled: yes
-      loop:
-        - open5gs-nrfd
-        - open5gs-amfd
-        - open5gs-smfd
-        - open5gs-upfd
-        - open5gs-ausfd
-        - open5gs-udmd
-        - open5gs-udrd
-        - open5gs-pcfd
-
-    
-    # Настройка USRP B200
-    
-    - name: 7. Clone UHD Images repository
-      git:
-        repo: https://github.com/TelecomDep/uhd_images
-        dest: /tmp/uhd_images
-        force: yes
-
-    - name: 7. Create UHD images directory
-      file:
-        path: /usr/share/uhd/images
-        state: directory
-        mode: '0755'
-
-    - name: 7. Copy images to system directory
-      copy:
-        src: /tmp/uhd_images/
-        dest: /usr/share/uhd/images/
-        remote_src: yes
-
-    - name: 7. Unzip FPGA firmware for B200
-      unarchive:
-        src: "/usr/share/uhd/images/{{ fpga_zip_name }}"
-        dest: /usr/share/uhd/images/
-        remote_src: yes
-        extra_opts: [-o] # Overwrite
-
-    - name: 7. Set UHD_IMAGES_DIR environment variable
-      lineinfile:
-        path: "~/.bashrc"
-        line: 'export UHD_IMAGES_DIR=/usr/share/uhd/images/'
-        create: yes
-
-    - name: 7. Export variable for current session
-      shell: export UHD_IMAGES_DIR=/usr/share/uhd/images/
-
-    
-    # Настройка прав доступа к USB (udev rules)
-    
-    - name: 8. Create udev rules for USRP
-      copy:
-        dest: /etc/udev/rules.d/uhd.rules
-        content: |
-          SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE="0666", GROUP="plugdev"
-          SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0021", MODE="0666", GROUP="plugdev"
-      notify: Reload udev rules
-
-    
-    # Установка и сборка OpenAirInterface5G (OAI)
-
-    - name: 9. Install basic build tools for OAI script
+    # UHD
+    - name: Установка UHD
       apt:
         name:
-          - git
-          - curl
-          - sudo
+          - uhd-host
+          - libuhd-dev
         state: present
-
-    - name: 9. Clone OAI Repository
-      git:
-        repo: https://gitlab.eurecom.fr/oai/openairinterface5g.git
-        dest: "/home/{{ lookup('env','USER') }}/openairinterface5g"
-        version: develop
-        force: yes
-      become_user: "{{ lookup('env','USER') }}"
-
-    - name: 9. Temporarily change OS version to 24.04 for OAI compatibility
-      replace:
-        path: /etc/os-release
-        regexp: 'VERSION_ID="25.04"'
-        replace: 'VERSION_ID="24.04"'
-      become: yes
-
-    # Запускаем установку зависимостей от имени пользователя
-    - name: 9. Run OAI dependency installer
-      shell: |
-        source oaienv
-        cd cmake_targets
-        echo "Y" | ./build_oai -I
-      args:
-        chdir: "/home/{{ lookup('env','USER') }}/openairinterface5g"
-        executable: /bin/bash
-      become_user: "{{ lookup('env','USER') }}"
-      register: oai_install_result
-      failed_when: "'build have failed' in oai_install_result.stdout"
-
-    # Возвращаем версию системы обратно 
-    - name: 9. Restore original OS version
-      replace:
-        path: /etc/os-release
-        regexp: 'VERSION_ID="24.04"'
-        replace: 'VERSION_ID="25.04"'
-      become: yes
-
-    - name: 9. Build gNB with USRP support
-      shell: |
-        source oaienv
-        cd cmake_targets
-        ./build_oai --gNB --ninja -w USRP
-      args:
-        chdir: "/home/{{ lookup('env','USER') }}/openairinterface5g"
-        executable: /bin/bash
-      become_user: "{{ lookup('env','USER') }}"
-      register: oai_build_result
-      failed_when: "'build have failed' in oai_build_result.stdout"
-
     
-    #  Конфигурация и подготовка к запуску gNB
     
-    - name: 10. Create config directory in home
-      file:
-        path: "/home/{{ lookup('env','USER') }}"
-        state: directory
-        owner: "{{ lookup('env','USER') }}"
-
-    - name:  10. Generate OAI gNB configuration
-      template:
-        src: templates/oai_gnb.conf.j2
-        dest: "/home/{{ lookup('env','USER') }}/oai_gnb.conf"
-        owner: "{{ lookup('env','USER') }}"
-        mode: '0644'
-
-    - name: 10. Final Message
-      debug:
-        msg: |
-          Installation Complete!
-
-  handlers:
-    - name: Reload udev rules
-      command: udevadm control --reload-rules && udevadm trigger
